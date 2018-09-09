@@ -2,7 +2,8 @@ extern crate rand;
 extern crate sfml;
 
 use rand::prelude::*;
-use sfml::graphics::{Color, FloatRect, Font, RectangleShape, RenderTarget, RenderWindow, Shape, Text, Transformable};
+use sfml::graphics::{FloatRect, RectangleShape, RenderTarget, RenderWindow, Shape, Transformable};
+use sfml::graphics::{Color, Font, Sprite, Text, Texture};
 use sfml::audio::{Sound, SoundBuffer};
 use sfml::system::{Clock, Time, Vector2f, Vector2u};
 use sfml::window::{Event, Key, Style};
@@ -20,6 +21,7 @@ pub struct Config {
     text_color: Color,      // score text color
     snake_color: Color,     // snake color
     food_color: Color,      // snake food color
+    back_color: Color,      // window background color
 }
 
 impl Config {
@@ -36,9 +38,10 @@ impl Config {
             entity_size: 40,
             fps: 10,
             text_size: 55,
-            text_color: Color::WHITE,
+            text_color: Color::BLACK,
             snake_color: Color::GREEN,
             food_color: Color::RED,
+            back_color: Color::rgb(122, 122, 122),
         })
     }
 
@@ -50,6 +53,7 @@ struct Resources {
     font: Font,                 // text font
     eat_buffer: SoundBuffer,    // eat sound buffer
     over_buffer: SoundBuffer,   // game over sound buffer
+    pause_texture: Texture,     // pause image texture
 }
 
 impl<'a> Resources {
@@ -64,7 +68,10 @@ impl<'a> Resources {
         let eat_buffer = SoundBuffer::from_file(filename).expect("Unable to load the eat sound.");
         let filename = "resources/error.ogg";
         let over_buffer = SoundBuffer::from_file(filename).expect("Unable to load the game over sound.");
-        Resources { font, eat_buffer, over_buffer }
+        // load textures
+        let filename = "resources/pause.png";
+        let pause_texture = Texture::from_file(filename).expect("Unable to load the pause texture.");
+        Resources { font, eat_buffer, over_buffer, pause_texture }
     }
 
 }
@@ -135,6 +142,8 @@ impl<'a> Entity<'a> {
     fn new(size: u32, position: Vector2f, color: &Color) -> Entity<'a> {
         let mut shape = RectangleShape::new();
         shape.set_fill_color(&color);
+        shape.set_outline_color(&Color::BLACK);
+        shape.set_outline_thickness(1.0);
         shape.set_size(Vector2f::new(size as f32, size as f32));
         shape.set_position(position);
         Entity { shape }
@@ -303,6 +312,13 @@ impl<'a> Graphic for Snake<'a> {
 
 }
 
+#[derive(Debug)]
+enum State {
+    Pause,
+    Play,
+    GameOver,
+}
+
 
 struct SnakeGame<'a> {
     window: RenderWindow,
@@ -311,9 +327,13 @@ struct SnakeGame<'a> {
     time_per_frame: Time,
     entity_size: u32,
     score: u32,
+    state: State,
     score_text: Text<'a>,
+    over_text: Text<'a>,
     eat_sound: Sound<'a>,
     over_sound: Sound<'a>,
+    pause_sprite: Sprite<'a>,
+    back_color: Color,
 }
 
 impl<'a> SnakeGame<'a> {
@@ -334,14 +354,25 @@ impl<'a> SnakeGame<'a> {
         let time_per_frame = Time::seconds(1.0 / config.fps as f32);
         window.set_framerate_limit(config.fps);
 
-        // initialize the score
+        // create text with the given string and default configuration properties
+        let create_text = |content: &str| {
+            let mut text = Text::default();
+            text.set_font(&resources.font);
+            text.set_character_size(config.text_size);
+            text.set_fill_color(&config.text_color);
+            text.set_string(&content);
+            text
+        };
+        // initialize the score text
         let score = 0;
-        let mut score_text = Text::default();
-        score_text.set_font(&resources.font);
-        score_text.set_character_size(config.text_size);
-        score_text.set_position(((window_size.x - config.text_size) as f32, 0.0));
-        score_text.set_fill_color(&config.text_color);
-        score_text.set_string(&score.to_string());
+        let mut score_text = create_text(&score.to_string());
+        score_text.set_position(((window_size.x - config.text_size) as f32, 10.0));
+        // initialize the game over text and sets its position in the middle of the window
+        let mut over_text = create_text("GAME OVER");
+        let bounds = over_text.local_bounds();
+        let x = window_size.x as f32 / 2.0 - bounds.width / 2.0;
+        let y = window_size.y as f32 / 2.0 - bounds.height / 2.0;
+        over_text.set_position((x, y));
 
         // init the audio
         let eat_sound = Sound::with_buffer(&resources.eat_buffer);
@@ -354,6 +385,9 @@ impl<'a> SnakeGame<'a> {
         let food_position = SnakeGame::random_position(window_size, config.entity_size);
         let food = Entity::new(config.entity_size, food_position, &config.food_color);
 
+        // initialize the pause sprite
+        let pause_sprite = Sprite::with_texture(&resources.pause_texture);
+
         SnakeGame {
             window,
             player,
@@ -361,9 +395,13 @@ impl<'a> SnakeGame<'a> {
             time_per_frame,
             entity_size: config.entity_size,
             score,
+            state: State::Pause,
             score_text,
+            over_text,
             eat_sound,
             over_sound,
+            pause_sprite,
+            back_color: config.back_color,
         }
     }
 
@@ -391,20 +429,31 @@ impl<'a> SnakeGame<'a> {
         };
         match key_direction() {
             Some(direction) => {
+                // reset game if necessary
+                if let State::GameOver = self.state {
+                    self.player.reset();
+                    self.set_score(0);
+                }
                 // check if going backwards is allowed
                 if self.player.segments.len() == 1 || !direction.is_opposite_to(&self.player.direction) {
                     self.player.next_direction = Some(direction);
+                    self.state = State::Play;
                 }
             },
-            None => ()
+            None => if let Key::P = key {
+                if let State::Play = self.state {
+                    // set the game state to pause
+                    self.player.next_direction = None;
+                    self.state = State::Pause;
+                }
+            }
         };
     }
 
-    /// Reset the game to its original state.
-    fn reset_state(&mut self) {
-        // reset snake
-        self.player.reset();
-        self.set_score(0);
+    /// Sets the game state to Game Over.
+    fn game_over(&mut self) {
+        self.state = State::GameOver;
+        self.over_sound.play();
     }
 
     /// Increase player score.
@@ -421,7 +470,7 @@ impl<'a> SnakeGame<'a> {
         self.score = value;
         // update score position and text
         let offset = digit_count(self.score) * self.score_text.character_size();
-        self.score_text.set_position(((self.window.size().x - offset) as f32, 0.0));
+        self.score_text.set_position(((self.window.size().x - offset) as f32, 10.0));
         self.score_text.set_string(&self.score.to_string());
     }
 
@@ -462,13 +511,17 @@ impl<'a> Game for SnakeGame<'a> {
 
     /// Update the game state.
     fn update(&mut self, _time: Time) {
+        // check current game state
+        match self.state {
+            State::Pause | State::GameOver => return,
+            _ => ()
+        };
         // update the player position
         let window_size = self.window.size();
         self.player.advance(window_size);
         // check collision with itself
         if self.player.self_collision() {
-            self.reset_state();
-            self.over_sound.play();
+            self.game_over();
         } else {
             // check collision with food
             match self.player.area().intersection(&self.food.area()) {
@@ -499,11 +552,16 @@ impl<'a> Game for SnakeGame<'a> {
 
     /// Draws all the game entities.
     fn render(&mut self) {
-        self.window.clear(&Color::BLACK);
+        self.window.clear(&self.back_color);
         // draw entities
         self.food.draw(&mut self.window);
         self.player.draw(&mut self.window);
         self.window.draw(&mut self.score_text);
+        match self.state {
+            State::Pause => self.window.draw(&mut self.pause_sprite),
+            State::GameOver => self.window.draw(&mut self.over_text),
+            _ => ()
+        };
         self.window.display();
     }
 
