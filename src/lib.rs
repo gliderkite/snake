@@ -37,7 +37,7 @@ impl Config {
             window_size: Vector2u::new(width, height),
             entity_size: 40,
             fps: 10,
-            text_size: 55,
+            text_size: 50,
             text_color: Color::BLACK,
             snake_color: Color::GREEN,
             food_color: Color::RED,
@@ -268,10 +268,9 @@ impl<'a> Snake<'a> {
     }
 
     /// Updates the snake position.
-    fn advance(&mut self, window_size: Vector2u) {
+    fn advance(&mut self, viewport: FloatRect) {
         // update direction
         self.direction = self.next_direction;
-        let window_size = Vector2f::new(window_size.x as f32, window_size.y as f32);
         let front_position = self.head_position();
         let size = self.size().x; // it's a square => x == y
         // the snake has always at least 1 segment
@@ -283,16 +282,24 @@ impl<'a> Snake<'a> {
         // https://en.wikipedia.org/wiki/Toroid
         last.set_position(match self.direction {
             Some(Direction::Left) => {
-                Vector2f::new((front_position.x - size + window_size.x) % window_size.x, front_position.y)
+                let x = (front_position.x - size + viewport.width - viewport.left) % viewport.width;
+                let x = x + viewport.left;
+                Vector2f::new(x, front_position.y)
             },
             Some(Direction::Up) => {
-                Vector2f::new(front_position.x, (front_position.y - size + window_size.y) % window_size.y)
+                let y = (front_position.y - size + viewport.height - viewport.top) % viewport.height;
+                let y = y + viewport.top;
+                Vector2f::new(front_position.x, y)
             },
             Some(Direction::Right) => {
-                Vector2f::new((front_position.x + size) % window_size.x, front_position.y)
+                let x = (front_position.x + size - viewport.left) % viewport.width;
+                let x = x + viewport.left;
+                Vector2f::new(x, front_position.y)
             },
             Some(Direction::Down) => {
-                Vector2f::new(front_position.x, (front_position.y + size) % window_size.y)
+                let y = (front_position.y + size - viewport.top) % viewport.height;
+                let y = y + viewport.top;
+                Vector2f::new(front_position.x, y)
             },
             _ => back_position
         });
@@ -326,6 +333,8 @@ struct SnakeGame<'a> {
     food: Entity<'a>,
     time_per_frame: Time,
     entity_size: u32,
+    viewport: FloatRect,
+    border: RectangleShape<'a>,
     score: u32,
     state: State,
     score_text: Text<'a>,
@@ -344,6 +353,13 @@ impl<'a> SnakeGame<'a> {
         let window_size = Vector2u::new(
             config.window_size.x - config.window_size.x % config.entity_size,
             config.window_size.y - config.window_size.y % config.entity_size);
+        // define the viewport where the snake can run
+        let viewport = FloatRect::new(
+            config.entity_size as f32,
+            config.entity_size as f32 * 2.0,
+            window_size.x as f32 - 2. * config.entity_size as f32,
+            window_size.y as f32 - 3. * config.entity_size as f32);
+        println!("viewport = {:?}", viewport);
         // create the window
         let mut window = RenderWindow::new(
             (window_size.x, window_size.y),
@@ -353,6 +369,15 @@ impl<'a> SnakeGame<'a> {
         // set frame limit
         let time_per_frame = Time::seconds(1.0 / config.fps as f32);
         window.set_framerate_limit(config.fps);
+
+        // create the border to separate the viewport from the top window section
+        // with the score
+        let mut border = RectangleShape::new();
+        border.set_fill_color(&Color::TRANSPARENT);
+        border.set_outline_color(&Color::WHITE);
+        border.set_outline_thickness(1.0);
+        border.set_size(Vector2f::new(viewport.width + config.entity_size as f32, 5.0));
+        border.set_position(Vector2f::new(viewport.left - (config.entity_size / 2) as f32, viewport.top - 5.0));
 
         // create text with the given string and default configuration properties
         let create_text = |content: &str| {
@@ -379,10 +404,10 @@ impl<'a> SnakeGame<'a> {
         let over_sound = Sound::with_buffer(&resources.over_buffer);
 
         // initialize the snake
-        let player_position = SnakeGame::random_position(window_size, config.entity_size);
+        let player_position = SnakeGame::random_position(viewport, config.entity_size);
         let player = Snake::new(player_position, config.entity_size, &config.snake_color);
         // initialize the food
-        let food_position = SnakeGame::random_position(window_size, config.entity_size);
+        let food_position = SnakeGame::random_position(viewport, config.entity_size);
         let food = Entity::new(config.entity_size, food_position, &config.food_color);
 
         // initialize the pause sprite
@@ -394,6 +419,8 @@ impl<'a> SnakeGame<'a> {
             food,
             time_per_frame,
             entity_size: config.entity_size,
+            viewport,
+            border,
             score,
             state: State::Pause,
             score_text,
@@ -405,15 +432,15 @@ impl<'a> SnakeGame<'a> {
         }
     }
 
-    /// Returns a random position within the window that is a multiple
+    /// Returns a random position within the viewport that is a multiple
     /// of the given entity_size.
-    fn random_position(window_size: Vector2u, entity_size: u32) -> Vector2f {
+    fn random_position(viewport: FloatRect, entity_size: u32) -> Vector2f {
         let mut rng = thread_rng();
-        let x = rng.gen_range(0, window_size.x);
-        let x = x - x % entity_size;
-        let y = rng.gen_range(0, window_size.y);
-        let y = y - y % entity_size;
-        Vector2f::new(x as f32, y as f32)
+        let x = rng.gen_range(0.0, viewport.width) + viewport.left;
+        let x = x - x % entity_size as f32;
+        let y = rng.gen_range(0.0, viewport.height) + viewport.top;
+        let y = y - y % entity_size as f32;
+        Vector2f::new(x, y)
     }
 
     /// Handles the player input.
@@ -517,8 +544,7 @@ impl<'a> Game for SnakeGame<'a> {
             _ => ()
         };
         // update the player position
-        let window_size = self.window.size();
-        self.player.advance(window_size);
+        self.player.advance(self.viewport);
         // check collision with itself
         if self.player.self_collision() {
             self.game_over();
@@ -529,13 +555,13 @@ impl<'a> Game for SnakeGame<'a> {
                     // increase snake length
                     self.player.grow();
                     // update food position
-                    let mut food_position = SnakeGame::random_position(window_size, self.entity_size);
+                    let mut food_position = SnakeGame::random_position(self.viewport, self.entity_size);
                     let mut food_area = FloatRect::new(
                         food_position.x, food_position.y,
                         self.entity_size as f32, self.entity_size as f32);
                     // try a new position if the new one collides with the snake
                     while self.player.collision(&food_area, 0) {
-                        food_position = SnakeGame::random_position(window_size, self.entity_size);
+                        food_position = SnakeGame::random_position(self.viewport, self.entity_size);
                         food_area.left = food_position.x;
                         food_area.top = food_position.y;
                     }
@@ -557,6 +583,7 @@ impl<'a> Game for SnakeGame<'a> {
         self.food.draw(&mut self.window);
         self.player.draw(&mut self.window);
         self.window.draw(&mut self.score_text);
+        self.window.draw(&mut self.border);
         match self.state {
             State::Pause => self.window.draw(&mut self.pause_sprite),
             State::GameOver => self.window.draw(&mut self.over_text),
